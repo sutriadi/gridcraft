@@ -116,11 +116,21 @@ jobs:
             export ANDROID_KEYSTORE_FILE="$RUNNER_TEMP/upload-keystore.jks"
             echo "Signing the AAB with the upload key."
             echo "AAB_SIGNED=true" >> "$GITHUB_ENV"
+            # Check the keystore up front and report the reason in the annotations (public data only).
+            echo "keystore secret: ${#KS_B64} chars, file $(wc -c < "$ANDROID_KEYSTORE_FILE") bytes"
+            if out=$(keytool -list -keystore "$ANDROID_KEYSTORE_FILE" -storepass "$ANDROID_KEYSTORE_PASSWORD" -alias "$ANDROID_KEY_ALIAS" 2>&1); then
+              echo "::notice::Keystore OK: ${out//$'\n'/ | }"
+            else
+              echo "::error::Keystore check failed: ${out//$'\n'/ | }"
+            fi
           else
             echo "::warning::No keystore secrets set: the AAB is UNSIGNED and Google Play will reject it."
             echo "AAB_SIGNED=false" >> "$GITHUB_ENV"
           fi
-          gradle :app:bundleRelease --no-daemon
+          if ! gradle :app:bundleRelease --no-daemon > "$RUNNER_TEMP/aab.log" 2>&1; then
+            tail -n 25 "$RUNNER_TEMP/aab.log" | sed 's/^/::error::/' | head -n 25
+            exit 1
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
