@@ -112,16 +112,22 @@ jobs:
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           if [ -n "${KS_B64:-}" ]; then
-            echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/upload-keystore.jks"
+            # Secrets pasted from a file often carry a trailing newline; strip line breaks and spaces.
+            echo "secret lengths: password ${#ANDROID_KEYSTORE_PASSWORD}, key password ${#ANDROID_KEY_PASSWORD}, alias ${#ANDROID_KEY_ALIAS}"
+            ANDROID_KEYSTORE_PASSWORD=$(printf %s "$ANDROID_KEYSTORE_PASSWORD" | tr -d '\r\n ')
+            ANDROID_KEY_PASSWORD=$(printf %s "$ANDROID_KEY_PASSWORD" | tr -d '\r\n ')
+            ANDROID_KEY_ALIAS=$(printf %s "$ANDROID_KEY_ALIAS" | tr -d '\r\n ')
+            export ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_PASSWORD ANDROID_KEY_ALIAS
+            printf %s "$KS_B64" | tr -d '\r\n ' | base64 -d > "$RUNNER_TEMP/upload-keystore.jks"
             export ANDROID_KEYSTORE_FILE="$RUNNER_TEMP/upload-keystore.jks"
             echo "Signing the AAB with the upload key."
             echo "AAB_SIGNED=true" >> "$GITHUB_ENV"
             # Check the keystore up front and report the reason in the annotations (public data only).
             echo "keystore secret: ${#KS_B64} chars, file $(wc -c < "$ANDROID_KEYSTORE_FILE") bytes"
             if out=$(keytool -list -keystore "$ANDROID_KEYSTORE_FILE" -storepass "$ANDROID_KEYSTORE_PASSWORD" -alias "$ANDROID_KEY_ALIAS" 2>&1); then
-              echo "::notice::Keystore OK: ${out//$'\n'/ | }"
+              echo "::notice::Keystore OK (password lengths now ${#ANDROID_KEYSTORE_PASSWORD}/${#ANDROID_KEY_PASSWORD}): ${out//$'\n'/ | }"
             else
-              echo "::error::Keystore check failed: ${out//$'\n'/ | }"
+              echo "::error::Keystore check failed (password lengths ${#ANDROID_KEYSTORE_PASSWORD}/${#ANDROID_KEY_PASSWORD}): ${out//$'\n'/ | }"
             fi
           else
             echo "::warning::No keystore secrets set: the AAB is UNSIGNED and Google Play will reject it."
