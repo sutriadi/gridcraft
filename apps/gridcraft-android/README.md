@@ -1,5 +1,8 @@
 # GridCraft for Android (tablets and foldables)
 
+Published as **Si Kantor: Lembar** (home-screen label "Lembar"). Based on GridCraft by the ArtCraft team
+and community; independent fork by sutriadi, not an ArtCraft product. See `NOTICE`.
+
 Status: **first skeleton, never run on a device.** The Rust side is checked and its bridge tests pass on a
 Linux host; the Android build (NDK, Gradle, Kotlin) was written without being able to compile it.
 
