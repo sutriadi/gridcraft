@@ -32,7 +32,7 @@
     <Property Id="ARPPRODUCTICON" Value="GridcraftIcon.ico" />
     <Property Id="ARPURLINFOABOUT" Value="https://getartcraft.com/apps/gridcraft" />
     <Property Id="ARPURLUPDATEINFO" Value="https://getartcraft.com/apps/gridcraft" />
-    <Property Id="ARPHELPLINK" Value="https://discord.gg/artcraft" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/sutriadi/gridcraft/issues" />
 
     <!-- An explicit command-line value wins. Otherwise retain the previous installation's
          choice, defaulting to off for a fresh install. Run only in the first sequence so the

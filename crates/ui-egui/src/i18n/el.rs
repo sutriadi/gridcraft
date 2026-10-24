@@ -775,7 +775,6 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Contributors" => "Συντελεστές",
         "Models" => "Μοντέλα",
         "Version {version}" => "Έκδοση {version}",
-        "Join the ArtCraft Discord" => "Συμμετοχή στον διακομιστή Discord του ArtCraft",
         "This workbook has no scripts or macros." => "Αυτό το βιβλίο εργασίας δεν έχει δέσμες ενεργειών ή μακροεντολές.",
         "(unnamed)" => "(χωρίς όνομα)",
         "— VBA project (preserved, not run)" => "— Έργο VBA (διατηρείται, δεν εκτελείται)",
