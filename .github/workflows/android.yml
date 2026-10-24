@@ -1,0 +1,147 @@
+name: Android (GridCraft 0.1)
+
+on:
+  push:
+    branches: [android-tablet-skeleton]
+    paths:
+      - "apps/gridcraft-android/**"
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "vendor/**"
+      - ".github/workflows/android.yml"
+    tags: ["android-v*"]
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Publish a GitHub release android-v<version>"
+        type: boolean
+        default: false
+      version:
+        description: "Version for the release tag"
+        default: "0.1.0"
+
+permissions:
+  contents: write
+
+env:
+  NDK_VERSION: 28.0.13004108
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install SDK platform, build-tools and NDK
+        run: |
+          set -euxo pipefail
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          SDKM="$(command -v sdkmanager || true)"
+          if [ -z "$SDKM" ]; then
+            SDKM="$(find "$SDK" -name sdkmanager -type f 2>/dev/null | head -n1 || true)"
+          fi
+          if [ -z "$SDKM" ]; then
+            # No preinstalled command-line tools: download them.
+            mkdir -p "$SDK/cmdline-tools"
+            curl -fsSL -o /tmp/cmdline-tools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+            unzip -q /tmp/cmdline-tools.zip -d /tmp/cmdline-tools
+            rm -rf "$SDK/cmdline-tools/latest"
+            mv /tmp/cmdline-tools/cmdline-tools "$SDK/cmdline-tools/latest"
+            SDKM="$SDK/cmdline-tools/latest/bin/sdkmanager"
+          fi
+          echo "sdkmanager: $SDKM (SDK: $SDK)"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          yes | "$SDKM" --sdk_root="$SDK" --licenses > /dev/null || true
+          "$SDKM" --sdk_root="$SDK" "platforms;android-36" "build-tools;36.0.0" "ndk;${NDK_VERSION}"
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-ndk
+
+      - name: Build libgridcraft_android.so
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/${NDK_VERSION}"
+          cargo ndk -t arm64-v8a -t x86_64 \
+            -o apps/gridcraft-android/android/app/src/main/jniLibs \
+            build --release -p gridcraft-android
+
+      - name: Check 16 KB page alignment of the native library
+        run: |
+          set -euo pipefail
+          for so in $(find apps/gridcraft-android/android/app/src/main/jniLibs -name '*.so'); do
+            align=$(readelf -lW "$so" | awk '$1=="LOAD" {print $NF}' | sort -u | tr '\n' ' ')
+            echo "$so: LOAD align = $align"
+            for a in $align; do
+              if [ $((a)) -lt 16384 ]; then echo "::error::$so is not 16 KB aligned"; exit 1; fi
+            done
+          done
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+
+      - name: Build debug APK
+        working-directory: apps/gridcraft-android/android
+        run: gradle :app:assembleDebug --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gridcraft-android-debug
+          path: apps/gridcraft-android/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+      - name: Build release AAB for Google Play
+        working-directory: apps/gridcraft-android/android
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -n "${KS_B64:-}" ]; then
+            echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/upload-keystore.jks"
+            export ANDROID_KEYSTORE_FILE="$RUNNER_TEMP/upload-keystore.jks"
+            echo "Signing the AAB with the upload key."
+            echo "AAB_SIGNED=true" >> "$GITHUB_ENV"
+          else
+            echo "::warning::No keystore secrets set: the AAB is UNSIGNED and Google Play will reject it."
+            echo "AAB_SIGNED=false" >> "$GITHUB_ENV"
+          fi
+          gradle :app:bundleRelease --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gridcraft-android-aab
+          path: apps/gridcraft-android/android/app/build/outputs/bundle/release/app-release.aab
+          if-no-files-found: error
+
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/android-v') || (github.event_name == 'workflow_dispatch' && inputs.release)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/android-v* ]]; then
+            VERSION="${GITHUB_REF_NAME#android-v}"
+          else
+            VERSION="${{ inputs.version }}"
+          fi
+          TAG="android-v${VERSION}"
+          APK="gridcraft-android-${VERSION}-debug.apk"
+          cp apps/gridcraft-android/android/app/build/outputs/apk/debug/app-debug.apk "$APK"
+          gh release create "$TAG" "$APK" --target "$GITHUB_SHA" \
+            --title "GridCraft for Android ${VERSION} (debug build)" \
+            --prerelease \
+            --notes "Early debug build for tablets and foldables. Signed with a debug key and not yet tested on a device. Based on GridCraft by Brandon Thomas (MIT or Apache-2.0)."

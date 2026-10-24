@@ -79,3 +79,7 @@ opt-level = 3
 lto = "thin"
 codegen-units = 16
 debug = 0
+
+[patch.crates-io]
+# Android: mouse hover/buttons/wheel and keyboard modifiers (winit 0.30 drops them on Android).
+winit = { path = "vendor/winit" }

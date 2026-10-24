@@ -574,7 +574,7 @@ pub fn show(app: &mut SheetApp, ui: &mut egui::Ui) {
     let available = ui.available_rect_before_wrap();
     // A right-to-left sheet has its vertical scrollbar on the left.
     let rtl = app.session.active().and_then(|d| d.wb.active()).is_some_and(|s| s.right_to_left);
-    let bar = 14.0_f32.min(available.width());
+    let bar = (if app.services.touch_ui { 28.0_f32 } else { 14.0 }).min(available.width());
     let rect = if rtl {
         Rect::from_min_max(pos2(available.left() + bar, available.top()), available.max)
     } else {

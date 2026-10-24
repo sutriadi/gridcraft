@@ -206,6 +206,8 @@ pub struct Services {
     pub open_async: Option<Box<dyn Fn()>>,
     /// Files delivered asynchronously (name, bytes), opened on the next frame.
     pub inbox: Option<Inbox>,
+    /// Touch-first host (Android): scroll bars are wide enough to grab with a finger.
+    pub touch_ui: bool,
     /// Web: hand PDF bytes to the browser's print flow directly (no download,
     /// no intermediate file) — opens the system print dialog on that PDF.
     pub print: Option<Box<dyn Fn(&[u8])>>,
