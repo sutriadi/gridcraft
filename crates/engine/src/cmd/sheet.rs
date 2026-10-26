@@ -7,7 +7,10 @@ use gridcraft_formula::adjust::{Axis, Edit};
 use gridcraft_model::{Anchor, AnchorMode, Sheet, Visibility};
 use serde_json::{Value as Json, json};
 
-use super::*;
+use super::{
+    CommandSpec, Ctx, EngineError, PROTECTED, Result, Session, bad, bool_param, cell_param_on, cmd, edit, has_clipboard, has_doc, ok, parse_lines,
+    str_param, target_range, target_sheet, u32_param,
+};
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
@@ -203,11 +206,13 @@ fn shift_sheet_features(sh: &mut Sheet, axis: Axis, at: u32, count: u32, insert:
     for (o, a) in sh.shapes.iter_mut().zip(new_shapes) {
         o.anchor = a;
     }
-    for sp in sh.sparklines.iter_mut() {
-        if let Some(c) = map_cell(sp.cell) {
+    sh.sparklines.retain_mut(|sp| match map_cell(sp.cell) {
+        Some(c) => {
             sp.cell = c;
+            true
         }
-    }
+        None => false,
+    });
     if let Some(pa) = sh.print.print_area {
         sh.print.print_area = map_range(pa);
     }
@@ -270,6 +275,29 @@ fn cancel_copy_mode(s: &mut Session) {
     }
 }
 
+fn inherit_line_format(sh: &mut Sheet, axis: Axis, at: u32, count: u32) {
+    if at == 0 {
+        return;
+    }
+    let prev = if axis == Axis::Rows { sh.rows.get(&(at - 1)).copied() } else { sh.cols.get(&(at - 1)).copied() };
+    if let Some(info) = prev {
+        for i in at..at + count {
+            let map = if axis == Axis::Rows { &mut sh.rows } else { &mut sh.cols };
+            map.insert(i, gridcraft_model::LineInfo { hidden: false, outline: 0, collapsed: false, ..info });
+        }
+    }
+}
+
+fn check_push_off_sheet(s: &Session, sheet: usize, axis: Axis, at: u32, count: u32, limit: u32) -> Result<()> {
+    if let Some(u) = s.doc()?.wb.sheet(sheet).and_then(|sh| sh.used_range()) {
+        let last = if axis == Axis::Rows { u.end.row } else { u.end.col };
+        if last >= at && last as u64 + count as u64 >= limit as u64 {
+            return Err(EngineError::Other("To prevent possible loss of data, Excel cannot shift nonblank cells off of the worksheet.".into()));
+        }
+    }
+    Ok(())
+}
+
 fn insert_lines(s: &mut Session, p: &Json, axis: Axis) -> Result<Json> {
     let (at, count) = lines(s, p, axis)?;
     let limit = if axis == Axis::Rows { MAX_ROWS } else { MAX_COLS };
@@ -279,13 +307,7 @@ fn insert_lines(s: &mut Session, p: &Json, axis: Axis) -> Result<Json> {
     }
     check_lines_protection(s, p, axis, at, count, true)?;
     let sheet = target_sheet(s, p)?;
-    // Refuse to push data off the sheet.
-    if let Some(u) = s.doc()?.wb.sheet(sheet).and_then(|sh| sh.used_range()) {
-        let last = if axis == Axis::Rows { u.end.row } else { u.end.col };
-        if last >= at && last as u64 + count as u64 >= limit as u64 {
-            return Err(EngineError::Other("To prevent possible loss of data, Excel cannot shift nonblank cells off of the worksheet.".into()));
-        }
-    }
+    check_push_off_sheet(s, sheet, axis, at, count, limit)?;
     let out = edit(s, |cx| {
         let name = cx.wb.sheet(sheet).map(|s| s.name.clone()).unwrap_or_default();
         cx.protection_checked = true;
@@ -297,15 +319,7 @@ fn insert_lines(s: &mut Session, p: &Json, axis: Axis) -> Result<Json> {
             }
             shift_sheet_features(sh, axis, at, count, true);
             // New lines take the format of the line before (Excel's "Format Same As Above").
-            if at > 0 {
-                let prev = if axis == Axis::Rows { sh.rows.get(&(at - 1)).copied() } else { sh.cols.get(&(at - 1)).copied() };
-                if let Some(info) = prev {
-                    for i in at..at + count {
-                        let map = if axis == Axis::Rows { &mut sh.rows } else { &mut sh.cols };
-                        map.insert(i, gridcraft_model::LineInfo { hidden: false, outline: 0, collapsed: false, ..info });
-                    }
-                }
-            }
+            inherit_line_format(sh, axis, at, count);
         }
         rewrite(&mut cx.wb, &name, &Edit::Insert { axis, at, count });
         cx.structural = true;
@@ -401,8 +415,10 @@ fn move_columns(s: &mut Session, p: &Json) -> Result<Json> {
     {
         return Err(EngineError::Other("To prevent possible loss of data, columns cannot be shifted off of the worksheet.".into()));
     }
-    check_lines_protection(s, &json!({"cols": RangeRef::cols(before, before).a1()}), Axis::Cols, before, count, true)?;
-    check_lines_protection(s, &json!({"cols": RangeRef::cols(from, end - 1).a1()}), Axis::Cols, from, count, false)?;
+    // The checks must authorize the sheet this command modifies (`target_sheet`), not whatever
+    // sheet is active: both carry the command's own `sheet` parameter on.
+    check_lines_protection(s, &json!({"cols": RangeRef::cols(before, before).a1(), "sheet": p.get("sheet")}), Axis::Cols, before, count, true)?;
+    check_lines_protection(s, &json!({"cols": RangeRef::cols(from, end - 1).a1(), "sheet": p.get("sheet")}), Axis::Cols, from, count, false)?;
 
     let moved_from = if before <= from { from + count } else { from };
     if moved_from.checked_add(count).is_none_or(|end| end > MAX_COLS) {
@@ -586,11 +602,15 @@ fn insert_copied_cells(s: &mut Session, p: &Json) -> Result<Json> {
     }
     let revision = d.revision;
     let before = (d.wb.clone(), d.selection.clone());
+    // Inside an undo group the nested steps add no undo entries of their own.
+    let nested_entries = !s.in_group(d.uid);
     let result = insert_copied_steps(s, &clip, sheet, at, shift, cut);
     let d = s.doc_mut()?;
     // The nested steps collapse into this command's single undo step.
-    for _ in 0..d.revision.saturating_sub(revision) {
-        d.undo.pop();
+    if nested_entries {
+        for _ in 0..d.revision.saturating_sub(revision) {
+            d.undo.pop();
+        }
     }
     match result {
         Ok((final_range, out)) => {

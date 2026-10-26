@@ -3,6 +3,11 @@ use serde_json::json;
 
 use crate::Session;
 
+thread_local! {
+    /// Copies of a document's undo and redo history `execute` has taken on this thread.
+    pub(crate) static HISTORY_COPIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn s() -> Session {
     let mut s = Session::new();
     s.new_workbook();
@@ -934,6 +939,86 @@ fn fill_without_formatting_extends_the_series_and_keeps_the_target_formats() {
     s.execute("range.setValues", json!({"range": "B1", "values": [["Product 1"], ["On backorder"]]})).unwrap();
     s.execute("edit.autoFill", json!({"source": "B1:B2", "target": "B1:B4", "mode": "values"})).unwrap();
     assert_eq!([v(&s, "B3"), v(&s, "B4")], [Value::from("Product 2"), Value::from("On backorder")]);
+}
+
+#[test]
+fn fill_days_weekdays_months_and_years_step_a_date_by_that_unit() {
+    let mut s = s();
+    let serials = |s: &Session, cells: &[&str]| cells.iter().map(|c| v(s, c)).collect::<Vec<_>>();
+    let n = |xs: &[f64]| xs.iter().map(|x| Value::Number(*x)).collect::<Vec<_>>();
+    // Friday 1/30/2026 is serial 46052.
+    s.execute("cell.set", json!({"cell": "A1", "input": "1/30/2026"})).unwrap();
+    assert_eq!(v(&s, "A1"), Value::Number(46052.0), "setup: a date");
+    s.execute("edit.autoFill", json!({"source": "A1", "target": "A1:A4", "mode": "days"})).unwrap();
+    assert_eq!(serials(&s, &["A2", "A3", "A4"]), n(&[46053.0, 46054.0, 46055.0]));
+    // Fill Weekdays skips Saturday 1/31 and Sunday 2/1.
+    s.execute("edit.autoFill", json!({"source": "A1", "target": "A1:A4", "mode": "weekdays"})).unwrap();
+    assert_eq!(serials(&s, &["A2", "A3", "A4"]), n(&[46055.0, 46056.0, 46057.0]));
+    // From Saturday 1/31, the first weekday is Monday 2/2.
+    s.execute("cell.set", json!({"cell": "B1", "input": "1/31/2026"})).unwrap();
+    s.execute("edit.autoFill", json!({"source": "B1", "target": "B1:B3", "mode": "weekdays"})).unwrap();
+    assert_eq!(serials(&s, &["B2", "B3"]), n(&[46055.0, 46056.0]));
+    // Fill Months keeps the day, clamped to the month's last day: Feb 28, Mar 31, Apr 30.
+    s.execute("edit.autoFill", json!({"source": "B1", "target": "B1:B4", "mode": "months"})).unwrap();
+    assert_eq!(serials(&s, &["B2", "B3", "B4"]), n(&[46081.0, 46112.0, 46142.0]));
+    s.execute("edit.autoFill", json!({"source": "B1", "target": "B1:B3", "mode": "years"})).unwrap();
+    assert_eq!(serials(&s, &["B2", "B3"]), n(&[46418.0, 46783.0]));
+    // Two dates step by their difference in the unit: 1/15 and 3/15 by two months.
+    s.execute("cell.set", json!({"cell": "C1", "input": "1/15/2026"})).unwrap();
+    s.execute("cell.set", json!({"cell": "C2", "input": "3/15/2026"})).unwrap();
+    s.execute("edit.autoFill", json!({"source": "C1:C2", "target": "C1:C4", "mode": "months"})).unwrap();
+    assert_eq!(serials(&s, &["C3", "C4"]), n(&[46157.0, 46218.0]));
+    // Monday 2/2 and Wednesday 2/4 step by two weekdays: Friday 2/6, Tuesday 2/10.
+    s.execute("cell.set", json!({"cell": "D1", "input": "2/2/2026"})).unwrap();
+    s.execute("cell.set", json!({"cell": "D2", "input": "2/4/2026"})).unwrap();
+    s.execute("edit.autoFill", json!({"source": "D1:D2", "target": "D1:D4", "mode": "weekdays"})).unwrap();
+    assert_eq!(serials(&s, &["D3", "D4"]), n(&[46059.0, 46063.0]));
+    // Upward from Monday 2/2: Friday 1/30, Thursday 1/29.
+    s.execute("cell.set", json!({"cell": "E5", "input": "2/2/2026"})).unwrap();
+    s.execute("edit.autoFill", json!({"source": "E5", "target": "E3:E5", "mode": "weekdays"})).unwrap();
+    assert_eq!(serials(&s, &["E4", "E3"]), n(&[46052.0, 46051.0]));
+    // A number that isn't a date fills as a plain drag does: a lone number copies.
+    s.execute("cell.set", json!({"cell": "F1", "input": "7"})).unwrap();
+    s.execute("edit.autoFill", json!({"source": "F1", "target": "F1:F2", "mode": "days"})).unwrap();
+    assert_eq!(v(&s, "F2"), Value::Number(7.0));
+    // An upper-case date format is a date: 1/31/2026 as YYYY-MM-DD fills by months.
+    s.execute("cell.set", json!({"cell": "G1", "input": "1/31/2026"})).unwrap();
+    s.execute("home.numberFormat", json!({"range": "G1", "code": "YYYY-MM-DD"})).unwrap();
+    s.execute("edit.autoFill", json!({"source": "G1", "target": "G1:G2", "mode": "months"})).unwrap();
+    assert_eq!(v(&s, "G2"), Value::Number(46081.0));
+    // A date with a time keeps the time: Fill Months and Fill Weekdays, a plain drag of two dates
+    // a month apart, and the Series dialog by months.
+    s.execute("cell.set", json!({"cell": "H1", "input": "1/31/2026 12:00"})).unwrap();
+    assert_eq!(v(&s, "H1"), Value::Number(46053.5), "setup: a date and time");
+    s.execute("edit.autoFill", json!({"source": "H1", "target": "H1:H2", "mode": "months"})).unwrap();
+    assert_eq!(v(&s, "H2"), Value::Number(46081.5));
+    s.execute("edit.autoFill", json!({"source": "H1", "target": "H1:H2", "mode": "weekdays"})).unwrap();
+    assert_eq!(v(&s, "H2"), Value::Number(46055.5));
+    s.execute("cell.set", json!({"cell": "I1", "input": "1/15/2026 6:00"})).unwrap();
+    s.execute("cell.set", json!({"cell": "I2", "input": "2/15/2026 6:00"})).unwrap();
+    s.execute("edit.autoFill", json!({"source": "I1:I2", "target": "I1:I3"})).unwrap();
+    assert_eq!(v(&s, "I3"), Value::Number(46096.25));
+    s.execute("cell.set", json!({"cell": "J1", "input": "1/31/2026 12:00"})).unwrap();
+    s.execute("edit.fillSeries", json!({"range": "J1:J2", "type": "date", "dateUnit": "month"})).unwrap();
+    assert_eq!(v(&s, "J2"), Value::Number(46081.5));
+}
+
+#[test]
+fn only_a_number_in_a_date_format_offers_the_date_fills() {
+    let mut s = s();
+    let dates = |s: &Session, a: &str| crate::fill::starts_with_date(&s.doc().unwrap().wb, 0, gridcraft_core::RangeRef::parse(a).unwrap());
+    s.execute("cell.set", json!({"cell": "A1", "input": "1/31/2026"})).unwrap();
+    s.execute("cell.set", json!({"cell": "A2", "input": "7"})).unwrap();
+    s.execute("home.numberFormat", json!({"range": "A2", "code": "0 \"days\""})).unwrap();
+    s.execute("cell.set", json!({"cell": "A3", "input": "46053"})).unwrap();
+    s.execute("home.numberFormat", json!({"range": "A3", "code": "YYYY-MM-DD"})).unwrap();
+    s.execute("cell.set", json!({"cell": "A4", "input": "=A1"})).unwrap();
+    s.execute("cell.set", json!({"cell": "A5", "input": "13:30"})).unwrap();
+    assert!(dates(&s, "A1") && dates(&s, "A3"), "m/d/yyyy and YYYY-MM-DD are dates");
+    assert!(!dates(&s, "A2"), "quoted text in a number format is not a date field");
+    assert!(!dates(&s, "A4"), "a formula is not offered");
+    assert!(!dates(&s, "A5"), "a time is not a date");
+    assert!(!dates(&s, "A6"), "an empty cell is not a date");
 }
 
 #[test]
@@ -1915,6 +2000,69 @@ fn autosum_over_whole_rows_is_one_undo_step_within_the_data() {
     assert_eq!(v(&s, "B6"), Value::Empty);
 }
 
+fn formula_at(s: &Session, a: &str) -> Option<String> {
+    s.doc().unwrap().wb.active().unwrap().cell(CellRef::parse(a).unwrap()).and_then(|c| c.formula.as_ref().map(|f| f.text.clone()))
+}
+
+#[test]
+fn autosum_over_a_row_totals_it_to_the_right() {
+    // As in Excel: a row selected and AutoSum puts one total to its right, not a one-cell total
+    // under each of its cells.
+    let mut s = s();
+    s.execute("range.setValues", json!({"range": "B2", "values": [[1, 2, 3, 4]]})).unwrap();
+    s.execute("formulas.autoSum", json!({"range": "B2:E2"})).unwrap();
+    assert_eq!(formula_at(&s, "F2").as_deref(), Some("SUM(B2:E2)"));
+    assert_eq!(v(&s, "F2"), Value::Number(10.0));
+    assert!(gridcraft_core::RangeRef::parse("B3:F3").unwrap().iter().all(|c| v(&s, &c.a1()) == Value::Empty), "nothing under the row");
+    assert_eq!(s.doc().unwrap().undo.len(), 2, "one undo step");
+    // A row whose last cell is empty takes its total there.
+    s.execute("range.setValues", json!({"range": "B4", "values": [[5, 6, 7]]})).unwrap();
+    s.execute("formulas.autoSum", json!({"range": "B4:E4"})).unwrap();
+    assert_eq!(formula_at(&s, "E4").as_deref(), Some("SUM(B4:D4)"));
+    assert_eq!(v(&s, "F4"), Value::Empty);
+    // AVERAGE and the rest go the same way.
+    s.execute("formulas.autoSum", json!({"range": "B2:E2", "function": "average"})).unwrap();
+    assert_eq!(formula_at(&s, "F2").as_deref(), Some("AVERAGE(B2:E2)"));
+}
+
+#[test]
+fn autosum_over_a_whole_row_totals_it_after_the_data() {
+    let mut s = s();
+    s.execute("range.setValues", json!({"range": "A2", "values": [[1, 2, 3]]})).unwrap();
+    s.execute("formulas.autoSum", json!({"range": "2:2"})).unwrap();
+    assert_eq!(formula_at(&s, "D2").as_deref(), Some("SUM(A2:C2)"));
+    assert_eq!(s.doc().unwrap().wb.active().unwrap().cells.used_range().unwrap().a1(), "A2:D2", "not out to the last column");
+}
+
+#[test]
+fn autosum_fills_a_selections_empty_last_column_and_row() {
+    // As in Excel: an empty last column takes each row's total, an empty last row each column's,
+    // and with both the corner takes the total of the block.
+    let mut s = s();
+    s.execute("range.setValues", json!({"range": "A1", "values": [[1, 2], [3, 4]]})).unwrap();
+    s.execute("formulas.autoSum", json!({"range": "A1:C2"})).unwrap();
+    assert_eq!((formula_at(&s, "C1").as_deref(), formula_at(&s, "C2").as_deref()), (Some("SUM(A1:B1)"), Some("SUM(A2:B2)")));
+    assert_eq!((v(&s, "C1"), v(&s, "C2")), (Value::Number(3.0), Value::Number(7.0)));
+    assert!(gridcraft_core::RangeRef::parse("A3:C3").unwrap().iter().all(|c| v(&s, &c.a1()) == Value::Empty), "no totals under the rows");
+
+    s.execute("range.setValues", json!({"range": "E1", "values": [[1, 2], [3, 4]]})).unwrap();
+    let steps = s.doc().unwrap().undo.len();
+    s.execute("formulas.autoSum", json!({"range": "E1:G3"})).unwrap();
+    for (cell, formula, value) in
+        [("E3", "SUM(E1:E2)", 4.0), ("F3", "SUM(F1:F2)", 6.0), ("G1", "SUM(E1:F1)", 3.0), ("G2", "SUM(E2:F2)", 7.0), ("G3", "SUM(E1:F2)", 10.0)]
+    {
+        assert_eq!(formula_at(&s, cell).as_deref(), Some(formula), "{cell}");
+        assert_eq!(v(&s, cell), Value::Number(value), "{cell}");
+    }
+    assert_eq!(s.doc().unwrap().undo.len(), steps + 1, "one undo step");
+
+    // Neither empty: totals below each column, as before.
+    s.execute("range.setValues", json!({"range": "I1", "values": [[1, 2], [3, 4]]})).unwrap();
+    s.execute("formulas.autoSum", json!({"range": "I1:J2"})).unwrap();
+    assert_eq!((formula_at(&s, "I3").as_deref(), formula_at(&s, "J3").as_deref()), (Some("SUM(I1:I2)"), Some("SUM(J1:J2)")));
+    assert_eq!(v(&s, "K1"), Value::Empty);
+}
+
 #[test]
 fn insert_and_delete_cells_never_shift_part_of_a_table() {
     // Found by the command-sequence fuzzer: Delete Cells moved part of a table's cells (so two
@@ -2779,6 +2927,42 @@ fn calculation_options_enable_iterative_calculation() {
     near(&s, "A1", 10.0);
 }
 
+#[test]
+fn error_checking_quotes_sheet_names_in_circular_references() {
+    let mut s = s();
+    s.execute("home.insertSheet", json!({"name": "Bob's Q1"})).unwrap();
+    s.execute("cell.set", json!({"cell": "B2", "input": "=B2+1"})).unwrap();
+    let r = s.execute("formulas.errorChecking", json!({})).unwrap();
+    assert_eq!(r["circular"], json!(["'Bob''s Q1'!B2"]));
+    // The reference reads back in a formula and in Go To.
+    let reference = r["circular"][0].as_str().unwrap().to_string();
+    s.execute("sheet.activate", json!({"sheet": 0})).unwrap();
+    s.execute("cell.set", json!({"cell": "A1", "input": format!("=ROW({reference})")})).unwrap();
+    assert_eq!(v(&s, "A1"), Value::Number(2.0));
+    s.execute("edit.goTo", json!({"reference": reference})).unwrap();
+    let d = s.doc().unwrap();
+    assert_eq!((d.wb.active_sheet, d.selection.active.a1()), (1, "B2".to_string()));
+}
+
+/// Undo and redo put cells back without calculating them; the circular references listed are
+/// those of the restored cells.
+#[test]
+fn undo_and_redo_list_the_circular_references_of_the_restored_cells() {
+    let mut s = s();
+    let listed = |s: &Session| s.doc().unwrap().calc.circular.iter().map(|(si, c)| (*si, c.a1())).collect::<Vec<_>>();
+    s.execute("cell.set", json!({"cell": "A5", "input": "=A5+1"})).unwrap();
+    assert_eq!(listed(&s), vec![(0, "A5".to_string())]);
+    s.execute("home.insertRows", json!({"rows": "2"})).unwrap();
+    assert_eq!(listed(&s), vec![(0, "A6".to_string())]);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(listed(&s), vec![(0, "A5".to_string())]);
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(listed(&s), vec![(0, "A6".to_string())]);
+    // Undoing the loop itself lists none.
+    s.execute("edit.undo", json!({"steps": 2})).unwrap();
+    assert!(listed(&s).is_empty());
+}
+
 fn chart_data(s: &mut Session) {
     s.execute(
         "range.setValues",
@@ -3262,6 +3446,19 @@ fn absolute_objects_ignore_sort_and_structural_edits() {
     assert_eq!(image_cell(&s, pinned), Some(CellRef::parse("A3").unwrap()));
 }
 
+/// Deleting a row removes the sparkline located on it; later ones shift up.
+#[test]
+fn deleting_a_row_removes_its_sparklines() {
+    let mut s = s();
+    s.execute("range.setValues", json!({"range": "A1", "values": [[1, 2, 3], [4, 5, 6], [7, 8, 9]]})).unwrap();
+    s.execute("insert.sparkline", json!({"range": "A2:C2", "location": "E2"})).unwrap();
+    s.execute("insert.sparkline", json!({"range": "A3:C3", "location": "E3"})).unwrap();
+    s.execute("home.deleteRows", json!({"rows": "2:2"})).unwrap();
+    let got: Vec<(String, String)> =
+        s.doc().unwrap().wb.active().unwrap().sparklines.iter().map(|sp| (sp.cell.to_string(), sp.source.clone())).collect();
+    assert_eq!(got, vec![("E2".to_string(), "A2:C2".to_string())]);
+}
+
 /// A "move but don't size" object follows its row across a sort but keeps its size.
 #[test]
 fn move_only_objects_follow_but_do_not_resize() {
@@ -3652,6 +3849,35 @@ fn notes_comments_and_links_survive_a_json_save() {
     assert_eq!(after.comments, before.comments);
     assert_eq!(after.hyperlinks, before.hyperlinks);
     assert_eq!(after.cells, before.cells);
+}
+
+/// Writing a note or a comment on a cell that has one of the same kind edits its text: the
+/// replies, the resolved state, the dates and the note's box stay. `comment` replaced the whole
+/// thread, so editing a comment dropped its replies.
+#[test]
+fn editing_a_note_or_a_comment_keeps_its_thread() {
+    let mut s = s();
+    s.execute("review.newComment", json!({"cell": "B2", "text": "first", "author": "Ada"})).unwrap();
+    s.execute("review.replyComment", json!({"cell": "B2", "text": "reply", "author": "Bob"})).unwrap();
+    s.execute("review.resolveComment", json!({"cell": "B2", "resolved": true})).unwrap();
+    s.execute("review.newComment", json!({"cell": "B2", "text": "edited"})).unwrap();
+    s.execute("review.newNote", json!({"cell": "A1", "text": "note", "author": "Ada"})).unwrap();
+    s.execute("review.showNote", json!({"cell": "A1"})).unwrap();
+    s.execute("review.newNote", json!({"cell": "A1", "text": "changed"})).unwrap();
+    let d = s.doc().unwrap();
+    let sh = d.wb.active().unwrap();
+    let thread = &sh.comments[&CellRef::parse("B2").unwrap()];
+    assert_eq!((thread.author.as_str(), thread.text.as_str()), ("Ada", "edited"));
+    assert_eq!(thread.replies, vec![("Bob".to_string(), "reply".to_string())]);
+    assert!(thread.resolved && thread.threaded);
+    let note = &sh.comments[&CellRef::parse("A1").unwrap()];
+    assert_eq!((note.author.as_str(), note.text.as_str()), ("Ada", "changed"));
+    assert!(note.visible && !note.threaded);
+    // A note written over a comment replaces it.
+    s.execute("review.newNote", json!({"cell": "B2", "text": "plain"})).unwrap();
+    let d = s.doc().unwrap();
+    let replaced = &d.wb.active().unwrap().comments[&CellRef::parse("B2").unwrap()];
+    assert!(!replaced.threaded && replaced.replies.is_empty());
 }
 
 /// A cut moves the block's notes, hyperlinks and merged areas with it. The source's cells and
@@ -4598,4 +4824,84 @@ fn html_export_without_pictures_or_charts_has_no_fixed_geometry() {
     s.execute("range.setValues", json!({"range": "A1", "values": [["a", "b"]]})).unwrap();
     let html = crate::io::to_html(&s.doc().unwrap().wb, 0).unwrap();
     assert!(!html.contains("<colgroup>") && !html.contains("table-layout") && !html.contains("<svg") && !html.contains("<img"), "{html}");
+}
+#[test]
+fn format_cells_permission_on_a_protected_sheet_cannot_unlock_cells() {
+    // Formatting may be allowed on a protected sheet; the permission can't serve as a key to
+    // content edits, so the format cells may not drop a cell's `locked` flag.
+    let mut s = s();
+    s.execute("cell.set", json!({"cell": "B2", "input": "hi"})).unwrap();
+    s.execute("review.protectSheet", json!({"formatCells": true})).unwrap();
+    s.execute("home.fontName", json!({"name": "Arial"})).unwrap();
+    let err = s.execute("home.lockCell", json!({"range": "B2", "on": false})).expect_err("unlock through formatting");
+    assert!(err.to_string().contains("protected"), "{err}");
+    assert!(s.execute("cell.set", json!({"cell": "B2", "input": "x"})).is_err(), "B2 stays locked");
+    // The same calls run once the sheet is unprotected.
+    s.execute("review.unprotectSheet", json!({})).unwrap();
+    s.execute("home.lockCell", json!({"range": "B2", "on": false})).unwrap();
+    s.execute("cell.set", json!({"cell": "B2", "input": "x"})).unwrap();
+    assert_eq!(v(&s, "B2"), Value::text("x"));
+}
+
+#[test]
+fn move_columns_checks_the_protection_of_the_named_sheet() {
+    // The move's protection checks must authorize the sheet it modifies, not whichever sheet
+    // happens to be active while the command names another one.
+    let mut s = s();
+    s.execute("home.insertSheet", json!({"name": "P"})).unwrap();
+    s.execute("range.setValues", json!({"range": "A1", "values": [[1, 2, 3, 4]]})).unwrap();
+    s.execute("review.protectSheet", json!({})).unwrap();
+    s.execute("sheet.activate", json!({"sheet": 0})).unwrap();
+    let err = s.execute("sheet.moveColumns", json!({"sheet": "P", "cols": "B:C", "before": 4})).expect_err("moving columns on a protected sheet");
+    assert!(err.to_string().contains("protected"), "{err}");
+    let pv: Vec<Value> = {
+        let d = s.doc().unwrap();
+        let sh = &d.wb.sheets[d.wb.sheet_index("P").unwrap()];
+        (0..4).map(|c| sh.value(CellRef::new(0, c as u32))).collect()
+    };
+    assert_eq!(pv, vec![Value::number(1.0), Value::number(2.0), Value::number(3.0), Value::number(4.0)]);
+    // The active, unprotected sheet moves fine.
+    s.execute("range.setValues", json!({"range": "A1", "values": [["A", "B", "C", "D"]]})).unwrap();
+    s.execute("sheet.moveColumns", json!({"cols": "B:B", "before": 4})).unwrap();
+    assert_eq!(v(&s, "A1"), Value::text("A"));
+}
+
+#[test]
+fn a_script_cannot_switch_windows() {
+    // Stored scripts are scoped to their workbook: a step that activates another window would
+    // point every later step at another open document, so it is refused before any step runs.
+    let mut s = s();
+    s.execute("automate.newScript", json!({"name": "t", "commands": [{"command": "window.activate", "params": {"index": 0}}]})).unwrap();
+    s.execute("automate.trustScripts", json!({"trusted": true})).unwrap();
+    let err = s.execute("automate.runScript", json!({"name": "t"})).expect_err("script switching windows");
+    assert!(err.to_string().contains("window.activate"), "{err}");
+    // A benign script runs.
+    s.execute("automate.newScript", json!({"name": "ok", "commands": [{"command": "cell.set", "params": {"cell": "A1", "input": "=1+1"}}]})).unwrap();
+    s.execute("automate.runScript", json!({"name": "ok"})).unwrap();
+    assert_eq!(v(&s, "A1"), Value::number(2.0));
+}
+
+mod seams;
+
+#[test]
+fn a_saved_workbook_keeps_its_values_until_an_edit_reaches_them() {
+    let mut s = s();
+    s.execute("cell.set", json!({"cell": "A1", "input": "2"})).unwrap();
+    s.execute("cell.set", json!({"cell": "B1", "input": "=A1*2"})).unwrap();
+    s.execute("cell.set", json!({"cell": "C1", "input": "=10"})).unwrap();
+    let mut wb = (*s.doc().unwrap().wb).clone();
+    // The values a file would have saved, not the ones the formulas give.
+    for (a, n) in [("B1", 99.0), ("C1", 7.0)] {
+        let sheet = std::sync::Arc::make_mut(&mut wb.sheets[0]);
+        let c = CellRef::parse(a).unwrap();
+        let mut cell = sheet.cells.get(c).unwrap().clone();
+        cell.value = Value::Number(n);
+        sheet.set_cell(c, cell);
+    }
+    let mut saved = Session::new();
+    saved.add_document(crate::DocState::from_saved(wb, None, "saved".into(), crate::Trust::FromFile));
+    assert_eq!(v(&saved, "B1"), Value::Number(99.0));
+    saved.execute("cell.set", json!({"cell": "A1", "input": "3"})).unwrap();
+    assert_eq!(v(&saved, "B1"), Value::Number(6.0));
+    assert_eq!(v(&saved, "C1"), Value::Number(7.0));
 }

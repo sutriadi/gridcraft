@@ -90,7 +90,7 @@ impl eframe::App for AndroidShell {
         if self.touch.is_pending() {
             ctx.request_repaint_after(Duration::from_millis(100)); // catches a long press
         }
-        self.app.raw_input_hook(raw);
+        self.app.raw_input_hook(ctx, raw);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {

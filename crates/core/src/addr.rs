@@ -246,7 +246,7 @@ fn is_r1c1_token(name: &str) -> bool {
         if chars.peek().is_some_and(|c| c.to_ascii_lowercase() == letter) {
             chars.next();
             letters += 1;
-            while chars.peek().is_some_and(|c| c.is_ascii_digit()) {
+            while chars.peek().is_some_and(char::is_ascii_digit) {
                 chars.next();
             }
         }
@@ -348,6 +348,21 @@ mod tests {
         assert_eq!(split_sheet("'a!b'!A1"), (Some("a!b".to_string()), "A1"));
         assert_eq!(split_sheet("'Bob''s'!$A$1:$B$2"), (Some("Bob's".to_string()), "$A$1:$B$2"));
         assert_eq!(split_sheet("A1"), (None, "A1"));
+    }
+
+    /// #2312: device/backslash garbage in front of `!` is cosmetic at worst — `split_sheet` only
+    /// splits at `!`, and every consumer matches the sheet part against workbook sheet names (it
+    /// never reaches a filesystem path or a shell); the body half always stays a pure cell/range
+    /// reference.
+    #[test]
+    fn split_sheet_leaves_device_names_inert_in_the_body() {
+        for s in ["C:\\a\\file!A1", "CON!A1", "NUL!A1", "a[b]!A1"] {
+            let (sheet, rest) = split_sheet(s);
+            assert_eq!(CellRef::parse(rest), Some(CellRef::new(0, 0)), "{s:?}: body must stay a bare reference");
+            let _ = sheet;
+        }
+        // A plain single-letter sheet is still split, not mistaken for a body.
+        assert_eq!(split_sheet("C!A1").0, Some("C".to_string()));
     }
 
     #[test]

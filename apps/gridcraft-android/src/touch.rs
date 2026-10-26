@@ -11,7 +11,7 @@
 
 #[cfg(test)]
 use egui::pos2;
-use egui::{Event, Modifiers, MouseWheelUnit, PointerButton, Pos2, RawInput, TouchId, TouchPhase, Vec2};
+use egui::{Event, Modifiers, MouseWheelSource, MouseWheelUnit, PointerButton, Pos2, RawInput, TouchId, TouchPhase, Vec2};
 
 /// Movement (points) before a touch counts as a drag instead of a tap.
 const SLOP: f32 = 10.0;
@@ -145,7 +145,7 @@ fn phase_end(phase: TouchPhase) -> TouchPhase {
 }
 
 fn wheel(delta: Vec2, phase: TouchPhase) -> Event {
-    Event::MouseWheel { unit: MouseWheelUnit::Point, delta, phase, modifiers: Modifiers::NONE }
+    Event::MouseWheel { unit: MouseWheelUnit::Point, delta, phase, modifiers: Modifiers::NONE, source: MouseWheelSource::Unknown }
 }
 
 #[cfg(test)]
