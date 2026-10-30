@@ -334,6 +334,8 @@ fn numbervalue(a: &[Arg], c: &mut dyn Ctx) -> R<Value> {
             if seen_dec {
                 return Err(CellError::Value);
             }
+        } else if c == '.' || c == ',' {
+            return Err(CellError::Value);
         } else {
             out.push(c);
         }
@@ -521,7 +523,7 @@ fn find_matches(text: &[char], delims: &[Vec<char>], insensitive: bool, from_end
         let mut j = t.len();
         while j > 0 {
             let best =
-                ds.iter().filter(|d| j.checked_sub(d.len()).and_then(|st| t.get(st..j)).is_some_and(|w| w == d.as_slice())).map(|d| d.len()).max();
+                ds.iter().filter(|d| j.checked_sub(d.len()).and_then(|st| t.get(st..j)).is_some_and(|w| w == d.as_slice())).map(Vec::len).max();
             match best {
                 Some(l) => {
                     out.push((j - l, j));
@@ -535,7 +537,7 @@ fn find_matches(text: &[char], delims: &[Vec<char>], insensitive: bool, from_end
     }
     let mut i = 0;
     while i < t.len() {
-        let best = ds.iter().filter(|d| t.get(i..i + d.len()).is_some_and(|w| w == d.as_slice())).map(|d| d.len()).max();
+        let best = ds.iter().filter(|d| t.get(i..i + d.len()).is_some_and(|w| w == d.as_slice())).map(Vec::len).max();
         match best {
             Some(l) => {
                 out.push((i, i + l));
@@ -586,7 +588,7 @@ fn textafter(a: &[Arg], _c: &mut dyn Ctx) -> R<Value> {
 }
 
 fn split_by(s: &[char], delims: &[Vec<char>], insensitive: bool) -> Vec<Vec<char>> {
-    if delims.iter().all(|d| d.is_empty()) {
+    if delims.iter().all(Vec::is_empty) {
         return vec![s.to_vec()];
     }
     let mut out = Vec::new();
@@ -746,9 +748,9 @@ fn convert_replacement(r: &str) -> String {
     let mut i = 0;
     while i < c.len() {
         let ch = c[i];
-        if ch == '$' && c.get(i + 1).is_some_and(|d| d.is_ascii_digit()) {
+        if ch == '$' && c.get(i + 1).is_some_and(char::is_ascii_digit) {
             let mut j = i + 1;
-            while c.get(j).is_some_and(|d| d.is_ascii_digit()) {
+            while c.get(j).is_some_and(char::is_ascii_digit) {
                 j += 1;
             }
             out.push_str("${");
@@ -1211,11 +1213,20 @@ mod tests {
         close(ev("VALUE", vec![t("12:00")]), 0.5);
         close(ev("VALUE", vec![t("2020-01-01")]), 43831.0);
         is_err(ev("VALUE", vec![t("abc")]), CellError::Value);
+        // Accounting negatives, as Excel 365 reads them.
+        close(ev("VALUE", vec![t("$(5)")]), -5.0);
+        close(ev("VALUE", vec![t("$ (1,000.50)")]), -1000.5);
+        close(ev("VALUE", vec![t("(5)%")]), -0.05);
+        for s in ["$(5)%", "$(5%)", "$5%", "(-5)", "((5))", "$(-5)", "(1/2)"] {
+            is_err(ev("VALUE", vec![t(s)]), CellError::Value);
+        }
         close(ev("NUMBERVALUE", vec![t("2.500,27"), t(","), t(".")]), 2500.27);
         close(ev("NUMBERVALUE", vec![t("3.5%")]), 0.035);
         close(ev("NUMBERVALUE", vec![t(" 1 000 ")]), 1000.0);
         close(ev("NUMBERVALUE", vec![t("")]), 0.0);
         is_err(ev("NUMBERVALUE", vec![t("1.2.3")]), CellError::Value);
+        is_err(ev("NUMBERVALUE", vec![t("1.5"), t(","), t(" ")]), CellError::Value);
+        is_err(ev("NUMBERVALUE", vec![t("1,5"), t("."), t(" ")]), CellError::Value);
         is_text(ev("FIXED", vec![n(1234.567), n(1.0)]), "1,234.6");
         is_text(ev("FIXED", vec![n(1234.567), n(-1.0)]), "1,230");
         is_text(ev("FIXED", vec![n(-1234.567), n(1.0), b(true)]), "-1234.6");
