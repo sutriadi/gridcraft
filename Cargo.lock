@@ -2181,7 +2181,7 @@ dependencies = [
 
 [[package]]
 name = "gridcraft-android"
-version = "0.16.0"
+version = "0.19.1"
 dependencies = [
  "android-activity",
  "android_logger",
