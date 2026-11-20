@@ -1,0 +1,33 @@
+[package]
+name = "gridcraft-android"
+description = "GridCraft for Android tablets and foldables (eframe on NativeActivity)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+# `cdylib` is what the Gradle project loads as libgridcraft_android.so; `rlib` lets the host run the tests.
+crate-type = ["cdylib", "rlib"]
+
+# Not `workspace = true`: the workspace forbids unsafe code, and the one `#[unsafe(no_mangle)]` entry
+# point that NativeActivity needs lives here (and only there).
+[lints.rust]
+unsafe_code = "deny"
+
+[dependencies]
+gridcraft-engine = { workspace = true }
+gridcraft-ui-egui = { workspace = true }
+eframe = { workspace = true, features = ["default_fonts", "wgpu"] }
+egui = { workspace = true }
+log = { workspace = true }
+
+[target.'cfg(target_os = "android")'.dependencies]
+android-activity = { version = "0.6.1", features = ["native-activity"] }
+android_logger = "0.15.1"
+eframe = { workspace = true, features = ["default_fonts", "wgpu", "android-native-activity"] }
+
+# Host-only: lets `cargo check` and `cargo test` run on a Linux desktop (winit needs a windowing
+# backend there). Never part of the Android build.
+[target.'cfg(all(unix, not(any(target_os = "macos", target_os = "android"))))'.dependencies]
+eframe = { workspace = true, features = ["default_fonts", "wgpu", "x11"] }
