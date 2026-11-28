@@ -102,7 +102,7 @@ jobs:
           name: gridcraft-android-debug
           path: apps/gridcraft-android/android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
-
+          retention-days: 1
       - name: Build release AAB for Google Play
         working-directory: apps/gridcraft-android/android
         env:
@@ -140,16 +140,10 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: gridcraft-android-aab
-          path: apps/gridcraft-android/android/app/build/outputs/bundle/release/app-release.aab
-          if-no-files-found: error
-
-      - uses: actions/upload-artifact@v4
-        with:
           name: gridcraft-android-release-apk
           path: apps/gridcraft-android/android/app/build/outputs/apk/release/*.apk
           if-no-files-found: error
-
+          retention-days: 1
       - name: Publish GitHub release
         if: startsWith(github.ref, 'refs/tags/android-v') || (github.event_name == 'workflow_dispatch' && inputs.release)
         env:
