@@ -158,11 +158,19 @@ jobs:
           APK="gridcraft-android-${VERSION}-debug.apk"
           cp apps/gridcraft-android/android/app/build/outputs/apk/debug/app-debug.apk "$APK"
           FILES=("$APK")
-          NOTES="Early build for tablets and foldables, not yet tested on a device. Based on GridCraft by Brandon Thomas (MIT or Apache-2.0). The debug APK is signed with a debug key. The release APK is signed with the upload key; Android will not install one over the other, so uninstall first when switching."
+          NOTES="Early build for tablets and foldables, not yet tested on a device. Based on GridCraft by Brandon Thomas (MIT or Apache-2.0). The debug APK is signed with a debug key. The release APK and the AAB (for Google Play) are signed with the upload key; Android will not install one over the other, so uninstall first when switching."
           if [ "${AAB_SIGNED:-false}" = "true" ]; then
             RAPK="gridcraft-android-${VERSION}-release.apk"
             cp apps/gridcraft-android/android/app/build/outputs/apk/release/app-release.apk "$RAPK"
             FILES+=("$RAPK")
+            AAB="apps/gridcraft-android/android/app/build/outputs/bundle/release/app-release.aab"
+            if [ -f "$AAB" ]; then
+              RAAB="gridcraft-android-${VERSION}-release.aab"
+              cp "$AAB" "$RAAB"
+              FILES+=("$RAAB")
+            else
+              echo "::warning::No AAB was produced; the release has APKs only."
+            fi
           else
             NOTES="$NOTES No keystore secrets were set, so there is no release APK in this release."
           fi
